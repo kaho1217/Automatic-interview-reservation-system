@@ -1,0 +1,257 @@
+/*****************************************************************************************
+*****************************************************************************************/
+
+
+/**
+ * slackに仮予約通知を転送する
+ * slack_notification()
+ *
+ **/
+
+
+
+function slack_notification() {
+ //Slack
+ const SLACK_WEBHOOK = "https://◯◯◯◯◯◯◯◯◯◯◯◯"; // 連携するslackのアドレス
+ const SLACK_POSTUSER = "仮予約Bot";
+
+ // Gmailから特定条件のスレッドを検索しメールを取り出す
+ var strTerms = 'subject:【予約システム】仮予約受付完了のご確認 from:◯◯◯◯◯@◯◯◯◯◯◯◯◯.jp'; // 仮予約通知時の予約システムのメールアドレス
+ var myThreads = GmailApp.search(strTerms, 0, 50); // 条件にマッチしたスレッドを取得
+ var myMsgs = GmailApp.getMessagesForThreads(myThreads); // スレッドからメールを取得する→二次元配列で格納
+
+ //各スレッド×メール
+ for (var i = myMsgs.length - 1; i >= 0; i--) {
+   var msgsInThread = myMsgs[i];
+   for (var j = 0; j < msgsInThread.length; j++) {
+     var msg = msgsInThread[j];
+
+     //未読のみ
+     if (msg.isUnread()) {
+       //メールを既読にする
+       msg.markRead();
+
+       //メッセージ作成（絵文字も可）
+       var msgBody = ":simple_smile:*" + msg.getSubject() + "*\n" +
+                     msg.getFrom() + "\n\n" +
+                     msg.getPlainBody().slice(0,512) + "\n\n" +
+                     msg.getDate() + "\n";
+
+       var msgJson = {
+         "username": SLACK_POSTUSER,
+         "text": msgBody
+       };
+       var payload = JSON.stringify(msgJson);
+
+       //Slackに送る
+       var options = {
+         "method": "post",
+         "contentType": "application/json",
+         "payload": payload
+       };
+
+       UrlFetchApp.fetch(SLACK_WEBHOOK, options);        
+     }
+   }
+ }
+}
+
+
+
+
+
+/*****************************************************************************************
+*****************************************************************************************/
+
+
+/*****************************************************************************************
+*****************************************************************************************/
+
+
+/**
+ * スプレッドシートに転記する
+ * searchContactMail()
+ * hasId(id)
+ *
+ **/
+
+
+
+/**
+ * メールから情報取得、スプレッドシートに転記
+**/
+
+function searchContactMail() {
+
+ const query = 'subject:予約内容のご確認 from:◯◯◯◯◯◯@◯◯◯◯◯◯.jp'; // 予約完了時の予約システムのメールアドレス
+ const start = 0;
+ const max = 10;
+
+ const sheet = SpreadsheetApp.getActiveSheet();
+ const threads = GmailApp.search(query, start, max);
+ const messages = GmailApp.getMessagesForThreads(threads);
+
+  for(var i = 0; i < messages.length; i++){
+    for(var j = 0; j < messages[i].length; j++){
+
+      // メッセージIDを取得(重複を防ぐため)
+      var messageId = messages[i][j].getId();
+
+      // もし、スプレッドシートに存在したら実行しない
+      if(!hasId(messageId)){
+        // メール受信日時を取得
+        var mailDate = messages[i][j].getDate();
+
+        // メッセージの本文をプレーンテキストで取得
+        var body = messages[i][j].getPlainBody();
+
+        // 正規表現をつくる
+        var reserveNum = new RegExp('■予約番号：' + '.*?' + '\r' );
+        var mentorName = new RegExp('■社員名：' + '.*?' + '\r' );
+        var reserveFamilyName = new RegExp('■名前（姓）：' + '.*?' + '\r' );
+        var reserveFirstName = new RegExp('■名前（名）：' + '.*?' + '\r' );
+        var date = new RegExp('■利用日時：' + '.*?' + '\r' );
+
+        // 正規表現をマッチさせたうえで、転記するときに、
+        // セルに"お名前："などが入らないように、正規部分を削る
+        var num = body.match(reserveNum)[0].replace("■予約番号：","");
+        var mentor = body.match(mentorName)[0].replace("■社員名：","");
+        var reserveFamilyName = body.match(reserveFamilyName)[0].replace("■名前（姓）：","");
+        var reserveFirstName = body.match(reserveFirstName)[0].replace("■名前（名）：","");
+        var date = body.match(date)[0].replace("■利用日時：","");
+        var day = date.substr(0,10);
+        var startTime = date.substr(14,5);
+        var endTime = date.substr(20,5);
+        var title
+
+          // 担当の社員名（A,B,C,D）で分岐
+          if(mentor.indexOf("A") == !-1){
+            title = "A面談/" + reserveFamilyName + reserveFirstName;
+          }else if(mentor.indexOf("B") == !-1){
+            title = "B面談/" + reserveFamilyName + reserveFirstName;
+          }else if(mentor.indexOf("C") == !-1){
+            title = "C面談/" + reserveFamilyName + reserveFirstName;
+          }else if(mentor.indexOf("D") == !-1){
+            title = "D面談/" + reserveFamilyName + reserveFirstName;
+          }
+        
+        // セルに行を追加する(メールID、メール受信日時、予約番号、社員名、予約者の姓、予約者の名、面談日、開始時間、終了時間、タイトル)
+        sheet.appendRow([messageId,mailDate,num,mentor,reserveFamilyName,reserveFirstName,day,startTime,endTime,title]);
+        }
+      }
+ } 
+}
+
+
+/**
+ * メールIDを取得
+**/
+
+function hasId(id){  
+  // 今回は1列目にメールIDを入れていくので1列目から探す
+   var data = sheet.getRange(1, 1,sheet.getLastRow(),1).getValues();
+   var hasId = data.some(function(value,index,data){
+  // コールバック関数
+   return (value[0] === id);
+ });
+ return hasId;
+}
+
+/*****************************************************************************************
+*****************************************************************************************/
+
+
+/**
+ * カレンダーに反映する
+ * createSchedule()
+**/
+
+
+
+/**
+* カレンダー連携実行時の予定を作成する
+*/
+
+function createSchedule() {
+
+ var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("GAS_TEST");
+
+ // 連携するアカウント
+ const gAccount = "◯◯◯◯@◯◯◯◯.co.jp"; //予約システム通知を設定しているメースアドレス
+ 
+ // 読み取り範囲（表の始まり行と終わり列）
+ const topRow = 2;
+ const lastCol = 10;
+
+ // 0始まりで列を指定しておく
+ 
+ // カレンダー反映済かどうか
+ const statusCellNum = 10;
+ // 社員名
+ const mentorNameNum = 3;
+ // 面談日
+ const dayCellNum = 6;
+ // 面談開始時間
+ const startCellNum = 7;
+ // 面談終了時間
+ const endCellNum = 8;
+ // タイトル（◯◯面談/△△××）
+ const titleCellNum = 9;
+
+ // シートを取得
+ var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+
+ // 予定の最終行を取得
+ var lastRow = sheet.getLastRow();
+ 
+ // 予定の一覧を取得
+ var contents = sheet.getRange(topRow, 1, sheet.getLastRow(), lastCol).getValues();
+ 
+ // googleカレンダーの取得
+ var calender = CalendarApp.getCalendarById(gAccount);
+
+ // 順に予定を作成（今回は正しい値が来ることを想定）
+ for (i = 0; i <= lastRow - topRow; i++) {
+
+   //「済」の場合は飛ばす
+   var status = sheet.getRange(topRow + i, 11).getValue();
+   var mentor = sheet.getRange(topRow + i, 4).getValue();
+   if (status == "済" || mentor.indexOf("A") == -1){
+     continue;
+   }
+
+   // 値をセット 日時はフォーマットして保持
+   var day = new Date(contents[i][dayCellNum]);
+   var startTime = contents[i][startCellNum];
+   var endTime = contents[i][endCellNum];
+   var title = contents[i][titleCellNum];
+   
+   try {
+       // 開始日時をフォーマット
+       var startDate = new Date(day);
+       startDate.setHours(startTime.getHours())
+       startDate.setMinutes(startTime.getMinutes());
+       // 終了日時をフォーマット
+       var endDate = new Date(day);
+       endDate.setHours(endTime.getHours())
+       endDate.setMinutes(endTime.getMinutes());
+       // 予定を作成
+       calender.createEvent(
+         title,
+         startDate,
+         endDate,
+       );
+     
+
+     // 無事に予定が作成されたら「済」にする
+     sheet.getRange(topRow + i, 11).setValue("済");
+
+   // エラーの場合（今回はログ出力のみ）
+   } catch(e) {
+     Logger.log(e);
+   }
+   
+ }
+ // ブラウザへ完了通知
+ Browser.msgBox("完了");
+}
